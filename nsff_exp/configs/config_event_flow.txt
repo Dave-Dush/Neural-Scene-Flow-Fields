@@ -1,4 +1,4 @@
-expname = kid-running-tiny
+expname = event-flow-kid-running-subset-small
 
 basedir = ./tinylogs
 datadir = /usr/stud/dave/storage/user/dave/kid-running/dense
@@ -41,4 +41,4 @@ timestamp_file = /usr/stud/dave/storage/user/dave/kid-running/prod/upsampled/tim
 upsampled_img_dir = /usr/stud/dave/storage/user/dave/kid-running/prod/upsampled/imgs/
 event_dir = /usr/stud/dave/storage/user/dave/kid-running/prod/events/imgs
 img_width = 512
-img_height = 228
+img_height = 288
