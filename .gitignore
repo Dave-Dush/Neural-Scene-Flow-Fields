@@ -1,0 +1,11 @@
+models/
+nsff_env/
+**/__pycache__/
+nsff_scripts/viz_flow/
+nsff_scripts/viz_warp_imgs/
+nsff_scripts/midas_otuputs/
+nsff_scripts/model.pt
+nsff_scripts/models.zip
+nsff_scripts/train.sbatch
+nsff_exp/tinylogs/
+nsff_exp/train.sbatch

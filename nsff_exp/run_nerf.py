@@ -7,12 +7,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+import torchvision
 import cv2
 from kornia import create_meshgrid
 
 from render_utils import *
 from run_nerf_helpers import *
 from load_llff import *
+
+from event_flow import event, warp_network, representation
+from glob import glob
+from PIL import Image
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(1)
@@ -155,6 +160,14 @@ def config_parser():
                         help='frequency of tensorboard image logging')
     parser.add_argument("--i_weights", type=int, default=10000, 
                         help='frequency of weight ckpt saving')
+
+    #event flow options
+    parser.add_argument("--timestamp_file", type=str)
+    parser.add_argument("--warp_ckpt", type=str)
+    parser.add_argument("--upsampled_img_dir", type=str)
+    parser.add_argument("--event_dir", type=str)
+    parser.add_argument("--img_height", type=int)
+    parser.add_argument("--img_width", type=int)
 
     return parser
 
@@ -309,7 +322,7 @@ def train():
 
     poses = torch.Tensor(poses).to(device)
 
-    N_iters = 2000 * 1000 #1000000
+    N_iters = 40000 #2000 * 1000 #1000000
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -326,6 +339,28 @@ def train():
 
     chain_bwd = 0
 
+    # warping model that accepts events
+
+    warp_model = warp_network.Warp()
+    warp_model = torch.nn.DataParallel(warp_model)
+    warp_model_ckpt = torch.load(args.warp_ckpt)
+    warp_model.load_state_dict(warp_model_ckpt["model_state_dict"])
+    warp_model.to(device)
+    # event based flow setup
+    _ts = []
+    with open(args.timestamp_file, "r") as _f:
+        _temp_ts = [float(line.strip()) for line in _f]
+        _ts.extend(_temp_ts)
+
+    upsampled_imgs = glob(os.path.join(args.upsampled_img_dir, "*.png"))
+    upsampled_imgs.sort()
+
+    print("loaded upsampled imgs")
+    event_seq = event.EventSequence.from_folder(args.event_dir, args.img_height, args.img_width, "*.npz")
+    print("loaded event sequence")
+
+    _dt = np.linspace(_ts[0], _ts[-1], 24)
+
     for i in range(start, N_iters):
         chain_bwd = 1 - chain_bwd
         time0 = time.time()
@@ -334,6 +369,7 @@ def train():
         print('Random FROM SINGLE IMAGE')
         # Random from one image
         img_i = np.random.choice(i_train)
+        
 
         if i % (decay_iteration * 1000) == 0:
             torch.cuda.empty_cache()
@@ -352,13 +388,47 @@ def train():
             flow_bwd, bwd_mask = read_optical_flow(args.datadir, img_i, 
                                                 args.start_frame, fwd=False)
             flow_fwd, fwd_mask = np.zeros_like(flow_bwd), np.zeros_like(bwd_mask)
-        else:
-            flow_fwd, fwd_mask = read_optical_flow(args.datadir, 
-                                                img_i, args.start_frame, 
-                                                fwd=True)
-            flow_bwd, bwd_mask = read_optical_flow(args.datadir, 
-                                                img_i, args.start_frame, 
-                                                fwd=False)
+        else:            
+            left_events = event_seq.filter_by_timestamp(_dt[img_i - 1], _dt[img_i])
+            left_events.reverse() # reverse polarity and timestamp direction
+
+            right_events = event_seq.filter_by_timestamp(_dt[img_i], _dt[img_i+1])
+
+            left_voxel = representation.to_voxel_grid(left_events).unsqueeze(0)
+            right_voxel = representation.to_voxel_grid(right_events).unsqueeze(0)
+
+            left_match = (np.abs(_ts - _dt[img_i - 1]).argmin())
+            #middle_match = (np.abs(_ts - _dt[img_i]).argmin())
+            right_match = (np.abs(_ts - _dt[img_i + 1]).argmin()) 
+
+            left_img = Image.open(upsampled_imgs[left_match])
+            #middle_img = Image.open(upsampled_imgs[middle_match])
+            right_img = Image.open(upsampled_imgs[right_match])
+
+            left_img_tensor = torchvision.transforms.ToTensor()(left_img).unsqueeze(0)
+            right_img_tensor = torchvision.transforms.ToTensor()(right_img).unsqueeze(0)
+
+            features = {
+                "before": {"rgb_image_tensor": left_img_tensor, "reversed_voxel_grid": left_voxel},
+                "after": {"rgb_image_tensor": right_img_tensor, "voxel_grid": right_voxel},
+            }
+
+            warped_items = warp_model(features)
+
+            flow_fwd = warped_items[2].squeeze(0).cpu().detach().numpy()
+            flow_fwd = np.moveaxis(flow_fwd, 0, -1)
+
+            flow_bwd = warped_items[3].squeeze(0).cpu().detach().numpy()
+            flow_bwd = np.moveaxis(flow_bwd, 0, -1)
+
+            fwd_mask = warped_items[4].squeeze(0).cpu().detach().numpy()
+            fwd_mask = np.moveaxis(fwd_mask, 0, -1).squeeze()
+
+            bwd_mask = warped_items[5].squeeze(0).cpu().detach().numpy()
+            bwd_mask = np.moveaxis(bwd_mask, 0, -1).squeeze()
+
+            # print(flow_fwd, flow_bwd)
+            # print(fwd_mask.shape, bwd_mask.shape)
 
         # # ======================== TEST 
         TEST = False
