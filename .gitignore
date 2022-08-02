@@ -1,6 +1,7 @@
 models/
 nsff_env/
 **/__pycache__/
+.vscode
 nsff_scripts/viz_flow/
 nsff_scripts/viz_warp_imgs/
 nsff_scripts/midas_otuputs/
